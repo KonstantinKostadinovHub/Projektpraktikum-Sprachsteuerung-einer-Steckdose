@@ -20,6 +20,7 @@
 #include "main.h"
 #include "string.h"
 #include "led.h"
+#include "common.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -106,6 +107,12 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   /* USER CODE BEGIN 2 */
   LightLEDs(0);
+  delay350Microseconds(4);
+  LightLEDs(2);
+  delay350Microseconds(4);
+  LightLEDs(4);
+  delay350Microseconds(4);
+  LightLEDs(6);
   /* USER CODE END 2 */
 
   /* Infinite loop */
