@@ -19,8 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "string.h"
-#include "led.h"
-#include "common.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -50,6 +48,9 @@ ETH_DMADescTypeDef  DMATxDscrTab[ETH_TX_DESC_CNT]; /* Ethernet Tx DMA Descriptor
 
 ETH_HandleTypeDef heth;
 
+I2S_HandleTypeDef hi2s2;
+DMA_HandleTypeDef hdma_spi2_rx;
+
 UART_HandleTypeDef huart3;
 
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
@@ -61,15 +62,128 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ETH_Init(void);
 static void MX_USART3_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
+static void MX_I2S2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+volatile uint16_t dmaBuffer[2*DMA_BUFFER_SIZE];
+volatile int32_t audioData[AUDIO_DATA_SIZE];
+volatile int32_t recording[AUDIO_DATA_SIZE];
+volatile unsigned int audioWritePos = 0;
+volatile unsigned int thresholdPos = 0;
+volatile bool recordingProcessing = 0;
+volatile bool halfCallbackDone = 0;
+volatile bool keywordRecording = 0;
+//help
+
+void circularBufferToRecording()
+{
+	//we must reorder the array to become usable
+    int firstPart = AUDIO_DATA_SIZE - thresholdPos;
+
+    memcpy(recording, audioData + thresholdPos, firstPart * sizeof(int32_t));
+    memcpy(recording + firstPart, audioData, thresholdPos * sizeof(int32_t));
+}
+
+int32_t convertBufferToSample(const uint16_t* pBlockStart)
+{
+	//takes one LR block at the specified address (4*16 bits) and converts it to one mono audio sample datum (32 bit)
+	//start position: address of beginning of array + halfCallbackDone*(DMA_BUFFER_SIZE/2); loop for (DMA_BUFFER_SIZE/2) values
+
+	//use the left channel bits (ignore upper 2*16 bits)
+	uint16_t highWord = pBlockStart[0]; // most significant word (MSW)
+	uint16_t lowWord  = pBlockStart[1]; // least significant word (LSW)
+
+	// shift high word to the left and combine with low word
+	int32_t leftChannel = (int32_t)(highWord << 16) | lowWord;
+
+	// 14 bit right shift to scale and correct for the sign (arithmetic shift)
+	return leftChannel >> 14;
+
+}
+
+void saveSample(int32_t level)
+{
+	int curWritePos = audioWritePos % AUDIO_DATA_SIZE;
+	if(level>THRESHOLD_VALUE && !keywordRecording && !recordingProcessing)
+	{
+		keywordRecording = 1; //we have started the recording
+		thresholdPos = curWritePos; //this can be modified to be at an earlier position later on as to not cut the audio off when being triggered
+	}
+	else if(curWritePos==thresholdPos && keywordRecording)
+	{
+		recordingProcessing = 1; //we can now fully utilize the data for processing
+		circularBufferToRecording();
+		keywordRecording=0;
+	}
+
+	audioData[curWritePos] = level;
+	audioWritePos++;
+}
+
+void bufferLoop()
+{
+	uint16_t* bufferStart = dmaBuffer + halfCallbackDone*DMA_BUFFER_SIZE/2; //figure out what the base address is based on which callback fires
+	// loop over half of the elements of the dma buffer
+	for (int i=0; i<DMA_BUFFER_SIZE/2; i+=4)
+	{
+		int32_t sampleValue = convertBufferToSample(&bufferStart[i]);
+		saveSample(sampleValue);
+
+	}
+}
+
+void stopRecording()
+{
+	//error
+	HAL_I2S_DMAStop(&hi2s2);
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
+	HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+	HAL_Delay(250);
+}
+
+
+void HAL_I2S_RxHalfCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+	//FOR DEBUGGING PURPOSES - REMOVE AFTERWARDS
+	//HAL_I2S_DMAStop(&hi2s2);
+	////////////////////////////////////////////
+
+	if (halfCallbackDone) stopRecording(); //the last callback was too slow for the recording: make the buffer bigger
+	if (hi2s->Instance == SPI2) // check whether the correct peripheral was triggered
+	{
+		bufferLoop();
+	}
+	halfCallbackDone = 1;
+}
+
+void HAL_I2S_RxCpltCallback(I2S_HandleTypeDef *hi2s)
+{
+	if (!halfCallbackDone) stopRecording(); //the last callback was too slow for the recording: make the buffer bigger
+	if (hi2s->Instance == SPI2) // check whether the correct peripheral was triggered
+	{
+		bufferLoop();
+	}
+	halfCallbackDone = 0;
+    // recording done
+//    if (hi2s->Instance == SPI2) // I2S2
+//    {
+//        is_recording_complete = true;
+//    }
+    //is_recording_complete = true;
+    //HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+    //HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+    //HAL_Delay(250);
+
+}
 
 /* USER CODE END 0 */
 
@@ -102,27 +216,59 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ETH_Init();
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
+  MX_I2S2_Init();
   /* USER CODE BEGIN 2 */
-  LightLEDs(0);
-  delay350Microseconds(4);
-  LightLEDs(2);
-  delay350Microseconds(4);
-  LightLEDs(4);
-  delay350Microseconds(4);
-  LightLEDs(6);
+  HAL_Delay(2000); //delay for testing purposes
+  HAL_I2S_Receive_DMA(&hi2s2, dmaBuffer, DMA_BUFFER_SIZE); //start the recording
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+
+	  if(audioWritePos>(2*AUDIO_DATA_SIZE-1))
+	  {
+		//FOR DEBUGGING PURPOSES - REMOVE AFTERWARDS
+		  HAL_I2S_DMAStop(&hi2s2);
+		  float sum = 0.0f;
+		  for (int i=0; i<AUDIO_DATA_SIZE; i++)
+		  {
+			  sum += audioData[i];
+		  }
+		  float average = sum / AUDIO_DATA_SIZE;
+		  HAL_I2S_DMAStop(&hi2s2);
+		  // loud: -7276
+		  // silent: -7852.10156;
+		////////////////////////////////////////////
+	  }
+
+	  //this is the part that processes the recording
+	  {
+		  //LLM-function(recording)
+		  recordingProcessing = 0; //we are ready for a new recording, since we have just processed the old one
+	  }
+
+
+
+
+//	  if (is_recording_complete)
+//	  {
+//		// Stoppt den DMA, sobald die 1-Sekunden-Aufnahme abgeschlossen ist
+//	  HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_0);
+//
+//	  HAL_I2S_DMAStop(&hi2s2);
+//	  HAL_Delay(250);
+//	  is_recording_complete = false;
+//	  }
+
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
-
-
   }
   /* USER CODE END 3 */
 }
@@ -222,6 +368,40 @@ static void MX_ETH_Init(void)
 }
 
 /**
+  * @brief I2S2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2S2_Init(void)
+{
+
+  /* USER CODE BEGIN I2S2_Init 0 */
+
+  /* USER CODE END I2S2_Init 0 */
+
+  /* USER CODE BEGIN I2S2_Init 1 */
+
+  /* USER CODE END I2S2_Init 1 */
+  hi2s2.Instance = SPI2;
+  hi2s2.Init.Mode = I2S_MODE_MASTER_RX;
+  hi2s2.Init.Standard = I2S_STANDARD_PHILIPS;
+  hi2s2.Init.DataFormat = I2S_DATAFORMAT_24B;
+  hi2s2.Init.MCLKOutput = I2S_MCLKOUTPUT_DISABLE;
+  hi2s2.Init.AudioFreq = I2S_AUDIOFREQ_16K;
+  hi2s2.Init.CPOL = I2S_CPOL_LOW;
+  hi2s2.Init.ClockSource = I2S_CLOCK_PLL;
+  hi2s2.Init.FullDuplexMode = I2S_FULLDUPLEXMODE_DISABLE;
+  if (HAL_I2S_Init(&hi2s2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2S2_Init 2 */
+
+  /* USER CODE END I2S2_Init 2 */
+
+}
+
+/**
   * @brief USART3 Initialization Function
   * @param None
   * @retval None
@@ -290,6 +470,22 @@ static void MX_USB_OTG_FS_PCD_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Stream3_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream3_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream3_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -310,23 +506,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_15, GPIO_PIN_SET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LD1_Pin|LD2_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12|LD3_Pin|GPIO_PIN_15|GPIO_PIN_3
-                          |GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOB, LD1_Pin|LD3_Pin|LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(USB_PowerSwitchOn_GPIO_Port, USB_PowerSwitchOn_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6|GPIO_PIN_7, GPIO_PIN_SET);
 
   /*Configure GPIO pin : USER_Btn_Pin */
   GPIO_InitStruct.Pin = USER_Btn_Pin;
@@ -334,24 +517,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USER_Btn_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PC2 PC6 PC7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_6|GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PA3 PA4 PA15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_15;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : LD1_Pin PB12 LD3_Pin PB15
-                           PB3 PB4 PB5 LD2_Pin */
-  GPIO_InitStruct.Pin = LD1_Pin|GPIO_PIN_12|LD3_Pin|GPIO_PIN_15
-                          |GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|LD2_Pin;
+  /*Configure GPIO pins : LD1_Pin LD3_Pin LD2_Pin */
+  GPIO_InitStruct.Pin = LD1_Pin|LD3_Pin|LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
