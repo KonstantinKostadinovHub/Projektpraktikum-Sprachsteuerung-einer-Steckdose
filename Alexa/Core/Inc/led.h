@@ -1,10 +1,7 @@
 #ifndef LED_H_
 #define LED_H_
 
-typedef struct {
-	GPIO_TypeDef* gpio;
-	uint16_t port_number;
-} PORT;
+#include "common.h"
 
 #define NUM_OF_LIGHTS 10
 
