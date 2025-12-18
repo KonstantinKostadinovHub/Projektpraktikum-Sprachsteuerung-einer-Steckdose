@@ -31,7 +31,7 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -53,7 +53,9 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+int32_t convertBufferToSample(/*input: address of LR block*/ const uint16_t* p_block_start);
+void bufferLoop();
+void stopRecording();
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
@@ -109,7 +111,24 @@ void Error_Handler(void);
 #define LD2_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+//buffering
+#define DMA_SAMPLES 2000 //number of buffered samples
+#define DMA_BUFFER_SIZE 4 * DMA_SAMPLES //array size used for buffering audio; 18 bits for 2 channels (left/right) represented by 2*2*16 bits
+//recording
+#define AUDIO_FREQ 16000 //16kHz
+#define AUDIO_DURATION_SEC 1 //duration of recorded audio in seconds
+#define AUDIO_DATA_SIZE AUDIO_FREQ * AUDIO_DURATION_SEC //array size used for recording audio
 
+#define THRESHOLD_VALUE 1000
+
+extern volatile bool recordingProcessing; //tracks whether we are processing a recording right now
+extern volatile bool halfCallbackDone; //if the last callback to finish was the half one, the variable is set to 1
+extern volatile bool keywordRecording; //the system has registered audio and reacts accordingly
+extern volatile int32_t audioData[AUDIO_DATA_SIZE]; //the recording of the last second
+//extern volatile uint16_t dmaBuffer[DMA_BUFFER_SIZE];  //a tiny sub-recording
+extern volatile int32_t recording[AUDIO_DATA_SIZE]; //the keyword recording that needs to be processed
+extern volatile unsigned int audioWritePos;
+extern volatile unsigned int thresholdPos;
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

@@ -37,8 +37,8 @@ void sendSequence(uint16_t bitSequence)
 			}
 			bitSequence = bitSequence << 1;
 		}
+		TransmitSignal(1,31);
 	}
-	TransmitSignal(1,31);
 }
 
 #endif RADIO_H_
