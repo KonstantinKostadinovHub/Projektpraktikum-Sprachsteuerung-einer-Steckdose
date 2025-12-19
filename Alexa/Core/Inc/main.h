@@ -56,6 +56,7 @@ void Error_Handler(void);
 int32_t convertBufferToSample(/*input: address of LR block*/ const uint16_t* p_block_start);
 void bufferLoop();
 void stopRecording();
+void visualizeAudio(int32_t level);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
@@ -119,7 +120,10 @@ void stopRecording();
 #define AUDIO_DURATION_SEC 1 //duration of recorded audio in seconds
 #define AUDIO_DATA_SIZE AUDIO_FREQ * AUDIO_DURATION_SEC //array size used for recording audio
 
-#define THRESHOLD_VALUE 1000
+#define DC_OFFSET 7871 
+#define MAX_LEVEL 20000 
+#define THRESHOLD_VALUE MAX_LEVEL/3 
+
 
 extern volatile bool recordingProcessing; //tracks whether we are processing a recording right now
 extern volatile bool halfCallbackDone; //if the last callback to finish was the half one, the variable is set to 1
