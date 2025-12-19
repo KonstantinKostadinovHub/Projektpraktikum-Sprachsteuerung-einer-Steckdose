@@ -133,16 +133,25 @@ void saveSample(int32_t level)
 	audioWritePos++;
 }
 
+void visualizeAudio(int32_t level) 
+{
+	if (level<THRESHOLD_VALUE) LightLEDs(0); //clamp to 0 as it is below the minimum
+	else if (level>MAX_LEVEL) LightLEDs(10); //clamp to 10 as it is above the maximum
+	else LightLEDs((uint8_t)(10 * (level-THRESHOLD_VALUE) / (MAX_LEVEL-THRESHOLD_VALUE))); // 10 times the percentage of the overshoot from the threshold
+}
+
 void bufferLoop()
 {
 	uint16_t* bufferStart = dmaBuffer + halfCallbackDone*DMA_BUFFER_SIZE/2; //figure out what the base address is based on which callback fires
+	int32_t bufferMax = 0;
 	// loop over half of the elements of the dma buffer
 	for (int i=0; i<DMA_BUFFER_SIZE/2; i+=4)
 	{
 		int32_t sampleValue = convertBufferToSample(&bufferStart[i]);
 		saveSample(sampleValue);
-
+		if (bufferMax<sampleValue) bufferMax=sampleValue;
 	}
+	visualizeAudio(bufferMax);
 }
 
 void stopRecording()
